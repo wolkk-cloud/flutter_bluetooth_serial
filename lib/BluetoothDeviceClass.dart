@@ -69,6 +69,9 @@ enum BluetoothDeviceClass {
   WEARABLE_UNCATEGORIZED(1792),
   WEARABLE_WRIST_WATCH(1796),
 
+  //Printer
+  PRINTER(1664),
+
   // Major Class Devices
   IMAGING(1536),
   MISC(0),
