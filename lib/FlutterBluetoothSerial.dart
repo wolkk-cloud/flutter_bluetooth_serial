@@ -213,7 +213,7 @@ class FlutterBluetoothSerial {
     controller = new StreamController(
       onCancel: () {
         // `cancelDiscovery` happens automaticly by platform code when closing event sink
-        subscription.cancel();
+        // subscription.cancel();
       },
     );
 
