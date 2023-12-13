@@ -208,14 +208,13 @@ class FlutterBluetoothSerial {
   /// Starts discovery and provides stream of `BluetoothDiscoveryResult`s.
   Stream<BluetoothDiscoveryResult> startDiscovery() async* {
     late StreamSubscription subscription;
-    StreamController controller;
+    StreamController controller = StreamController();
 
-    controller = new StreamController(
-      onCancel: () {
-        // `cancelDiscovery` happens automaticly by platform code when closing event sink
-        // subscription.cancel();
-      },
-    );
+    controller.onCancel = () {
+      // `cancelDiscovery` happens automatically by platform code when closing event sink
+      subscription.cancel();
+      controller.close(); // Close the controller when cancelling
+    };
 
     await _methodChannel.invokeMethod('startDiscovery');
 
@@ -225,8 +224,12 @@ class FlutterBluetoothSerial {
           onDone: controller.close,
         );
 
-    yield* controller.stream
-        .map((map) => BluetoothDiscoveryResult.fromMap(map));
+    try {
+      yield* controller.stream
+          .map((map) => BluetoothDiscoveryResult.fromMap(map));
+    } finally {
+      controller.close(); // Ensure the controller is closed after yielding
+    }
   }
 
   /// Cancels the discovery
