@@ -409,18 +409,20 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                 }
         );
         binding.addRequestPermissionsResultListener(
-                (requestCode, permissions, grantResults) -> {
-                    switch (requestCode) {
-                        case REQUEST_COARSE_LOCATION_PERMISSIONS:
-                            pendingPermissionsEnsureCallbacks.onResult(grantResults[0] == PackageManager.PERMISSION_GRANTED);
-                            pendingPermissionsEnsureCallbacks = null;
-                            return true;
+        (requestCode, permissions, grantResults) -> {
+            switch (requestCode) {
+                case REQUEST_COARSE_LOCATION_PERMISSIONS:
+                    if (pendingPermissionsEnsureCallbacks != null) {
+                        pendingPermissionsEnsureCallbacks.onResult(grantResults[0] == PackageManager.PERMISSION_GRANTED);
+                        pendingPermissionsEnsureCallbacks = null;
                     }
-                    return false;
-                }
-        );
-        activity = binding.getActivity();
-        activeContext = binding.getActivity().getApplicationContext();
+                    return true;
+            }
+            return false;
+        }
+    );
+    activity = binding.getActivity();
+    activeContext = binding.getActivity().getApplicationContext();
 
     }
 
