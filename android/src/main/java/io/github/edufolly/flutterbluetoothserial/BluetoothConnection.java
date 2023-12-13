@@ -52,7 +52,7 @@ public abstract class BluetoothConnection
         }
 
         // Cancel discovery, even though we didn't start it
-        bluetoothAdapter.cancelDiscovery();
+        // bluetoothAdapter.cancelDiscovery();
 
         socket.connect();
 
