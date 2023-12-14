@@ -380,7 +380,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
         if (methodChannel != null) methodChannel.setMethodCallHandler(null);
     }
 
-   @Overrideß
+   @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
         this.activity = binding.getActivity();
         BluetoothManager bluetoothManager = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
