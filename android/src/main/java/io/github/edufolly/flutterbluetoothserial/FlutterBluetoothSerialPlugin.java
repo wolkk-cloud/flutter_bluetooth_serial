@@ -380,49 +380,57 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
         if (methodChannel != null) methodChannel.setMethodCallHandler(null);
     }
 
-    @Override
+   @Overrideß
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
-//        if (true) throw new RuntimeException("FlutterBluetoothSerial Attached to activity");
         this.activity = binding.getActivity();
         BluetoothManager bluetoothManager = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
-        assert bluetoothManager != null;
+        
+        if (bluetoothManager != null) {
+            this.bluetoothAdapter = bluetoothManager.getAdapter();
 
-        this.bluetoothAdapter = bluetoothManager.getAdapter();
+            binding.addActivityResultListener((requestCode, resultCode, data) -> {
+                switch (requestCode) {
+                    case REQUEST_ENABLE_BLUETOOTH:
+                        if (pendingResultForActivityResult != null) {
+                            pendingResultForActivityResult.success(resultCode == Activity.RESULT_OK);
+                        }
+                        return true;
 
-        binding.addActivityResultListener(
-                (requestCode, resultCode, data) -> {
-                    switch (requestCode) {
-                        case REQUEST_ENABLE_BLUETOOTH:
-                            // @TODO - used underlying value of `Activity.RESULT_CANCELED` since we tend to use `androidx` in which I were not able to find the constant.
-                            if (pendingResultForActivityResult != null) {
-                                pendingResultForActivityResult.success(resultCode != 0);
-                            }
-                            return true;
+                    case REQUEST_DISCOVERABLE_BLUETOOTH:
+                        pendingResultForActivityResult.success(resultCode == Activity.RESULT_OK ? -1 : resultCode);
+                        return true;
 
-                        case REQUEST_DISCOVERABLE_BLUETOOTH:
-                            pendingResultForActivityResult.success(resultCode == 0 ? -1 : resultCode);
-                            return true;
-
-                        default:
-                            return false;
-                    }
+                    default:
+                        return false;
                 }
-        );
-        binding.addRequestPermissionsResultListener(
-        (requestCode, permissions, grantResults) -> {
+            });
+
+            binding.addRequestPermissionsResultListener((requestCode, permissions, grantResults) -> {
             switch (requestCode) {
                 case REQUEST_COARSE_LOCATION_PERMISSIONS:
                     if (pendingPermissionsEnsureCallbacks != null) {
-                        pendingPermissionsEnsureCallbacks.onResult(grantResults[0] == PackageManager.PERMISSION_GRANTED);
-                        pendingPermissionsEnsureCallbacks = null;
+                        boolean permissionGranted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+                        
+                        // Adding a delay using Handler
+                        new Handler().postDelayed(() -> {
+                            if (pendingPermissionsEnsureCallbacks != null) {
+                                pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
+                                pendingPermissionsEnsureCallbacks = null;
+                            }
+                        }, 500);
                     }
                     return true;
             }
             return false;
+            });
+
+            activity = binding.getActivity();
+            activeContext = binding.getActivity().getApplicationContext();
+        } else {
+            // Handle the case where BluetoothManager is null
+            Log.e("YourTag", "BluetoothManager is null");
         }
-    );
-    activity = binding.getActivity();
-    activeContext = binding.getActivity().getApplicationContext();
+    }
 
     }
 
