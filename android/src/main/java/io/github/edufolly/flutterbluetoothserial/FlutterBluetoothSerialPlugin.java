@@ -418,7 +418,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                                     pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
                                     pendingPermissionsEnsureCallbacks = null;
                                 }
-                            }, 500);
+                            }, 1200);
                         }
                         return true;
                 }
