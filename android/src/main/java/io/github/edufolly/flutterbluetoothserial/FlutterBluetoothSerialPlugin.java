@@ -421,7 +421,6 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
             activity = binding.getActivity();
             activeContext = binding.getActivity().getApplicationContext();
         } else {
-            return false;
             // Handle the case where BluetoothManager is null
             Log.e("YourTag", "BluetoothManager is null");
         }
