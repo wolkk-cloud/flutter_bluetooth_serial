@@ -55,6 +55,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
     private static final int REQUEST_COARSE_LOCATION_PERMISSIONS = 1451;
     private static final int REQUEST_ENABLE_BLUETOOTH = 1337;
     private static final int REQUEST_DISCOVERABLE_BLUETOOTH = 2137;
+    private static final int REQUEST_BLUETOOTH_PERMISSIONS = 123;
 
     // General Bluetooth
     private BluetoothAdapter bluetoothAdapter;
