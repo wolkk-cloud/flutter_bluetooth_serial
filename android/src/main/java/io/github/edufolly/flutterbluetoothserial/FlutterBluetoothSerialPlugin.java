@@ -6,39 +6,36 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothClass;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.os.Handler;
+import android.os.AsyncTask;
+import android.os.Build;
+import android.util.Log;
+import android.util.SparseArray;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import android.os.Build;
-import android.util.Log;
-import android.util.SparseArray;
-import android.os.AsyncTask;
-
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.util.Enumeration;
+import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.net.NetworkInterface;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.EventChannel;
-import io.flutter.plugin.common.EventChannel.StreamHandler;
 import io.flutter.plugin.common.EventChannel.EventSink;
+import io.flutter.plugin.common.EventChannel.StreamHandler;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
@@ -430,33 +427,27 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
         }
     }
 
-    private void handleLocationPermissionsResult(int[] grantResults) {
-        if (pendingPermissionsEnsureCallbacks != null && grantResults.length > 0) {
-            boolean permissionGranted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
-
-            // Adding a delay using Handler
-            new Handler().postDelayed(() -> {
-                if (pendingPermissionsEnsureCallbacks != null) {
-                    pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
-                    pendingPermissionsEnsureCallbacks = null;
-                }
-            }, 500);
-        }
-    }
-
     private void handleBluetoothPermissionsResult(int[] grantResults) {
-        if (pendingPermissionsEnsureCallbacks != null && grantResults.length > 0) {
-            boolean permissionGranted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        boolean permissionGranted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
 
-            // Adding a delay using Handler
-            new Handler().postDelayed(() -> {
-                if (pendingPermissionsEnsureCallbacks != null) {
-                    pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
-                    pendingPermissionsEnsureCallbacks = null;
-                }
-            }, 500);
+        if (pendingBluetoothPermissionCallback != null) {
+            pendingBluetoothPermissionCallback.onResult(permissionGranted);
+            pendingBluetoothPermissionCallback = null;
         }
     }
+
+    private void handleLocationPermissionsResult(int[] grantResults) {
+        boolean permissionGranted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+        if (pendingLocationPermissionCallback != null) {
+            pendingLocationPermissionCallback.onResult(permissionGranted);
+            pendingLocationPermissionCallback = null;
+        }
+    }
+
+
 
 
 
@@ -475,33 +466,23 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
     }
 
-
-    private interface EnsurePermissionsCallback {
+    private interface BluetoothPermissionCallback {
         void onResult(boolean granted);
     }
 
-    EnsurePermissionsCallback pendingPermissionsEnsureCallbacks = null;
+    private interface LocationPermissionCallback {
+        void onResult(boolean granted);
+    }
 
-    private void ensurePermissions(EnsurePermissionsCallback callbacks) {
-    boolean locationPermissionGranted = (
-            ContextCompat.checkSelfPermission(activity,
-                    Manifest.permission.ACCESS_COARSE_LOCATION)
-                    == PackageManager.PERMISSION_GRANTED
-            && ContextCompat.checkSelfPermission(activity,
-                    Manifest.permission.ACCESS_FINE_LOCATION)
-                    == PackageManager.PERMISSION_GRANTED);
+    BluetoothPermissionCallback pendingBluetoothPermissionCallback = null;
+    LocationPermissionCallback pendingLocationPermissionCallback = null;
 
-    String[] locationRequestString = new String[]{
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_FINE_LOCATION
-    };
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    private void ensureBluetoothPermissions(BluetoothPermissionCallback bluetoothCallback) {
         boolean bluetoothPermissionGranted = (
                 ContextCompat.checkSelfPermission(activity,
                         Manifest.permission.BLUETOOTH_SCAN)
                         == PackageManager.PERMISSION_GRANTED
-                && ContextCompat.checkSelfPermission(activity,
+                        && ContextCompat.checkSelfPermission(activity,
                         Manifest.permission.BLUETOOTH_CONNECT)
                         == PackageManager.PERMISSION_GRANTED);
 
@@ -515,31 +496,38 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                     bluetoothRequestString,
                     REQUEST_BLUETOOTH_PERMISSIONS);
 
-            pendingPermissionsEnsureCallbacks = callbacks;
-        } else if (!locationPermissionGranted) {
-            ActivityCompat.requestPermissions(activity,
-                    locationRequestString,
-                    REQUEST_COARSE_LOCATION_PERMISSIONS);
-
-            pendingPermissionsEnsureCallbacks = callbacks;
+            pendingBluetoothPermissionCallback = bluetoothCallback;
         } else {
-            // Both Bluetooth and location permissions are granted
-            callbacks.onResult(true);
+            // Bluetooth permissions are granted
+            bluetoothCallback.onResult(true);
         }
-    } else {
+    }
+
+    private void ensureLocationPermissions(LocationPermissionCallback locationCallback) {
+        boolean locationPermissionGranted = (
+                ContextCompat.checkSelfPermission(activity,
+                        Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                        && ContextCompat.checkSelfPermission(activity,
+                        Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED);
+
+        String[] locationRequestString = new String[]{
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+        };
+
         if (!locationPermissionGranted) {
             ActivityCompat.requestPermissions(activity,
                     locationRequestString,
                     REQUEST_COARSE_LOCATION_PERMISSIONS);
 
-            pendingPermissionsEnsureCallbacks = callbacks;
+            pendingLocationPermissionCallback = locationCallback;
         } else {
             // Location permissions are granted
-            callbacks.onResult(true);
+            locationCallback.onResult(true);
         }
     }
-    }
-
 
 
 
@@ -661,7 +649,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
                 case "requestEnable":
                     if (!bluetoothAdapter.isEnabled()) {
-                        ensurePermissions(granted -> {
+                        ensureBluetoothPermissions(granted -> {
                             if (!granted) {
                                 result.error("no_permissions", "Enabling bluetooth requires bluetooth permission", null);
                                 return;
@@ -678,7 +666,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
                 case "requestDisable":
                     if (bluetoothAdapter.isEnabled()) {
-                        ensurePermissions(granted -> {
+                        ensureBluetoothPermissions(granted -> {
                             if (!granted) {
                                 result.error("no_permissions", "Enabling bluetooth requires bluetooth permission", null);
                                 return;
@@ -693,7 +681,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                     break;
 
                 case "ensurePermissions":
-                    ensurePermissions(result::success);
+                    ensureBluetoothPermissions(result::success);
                     break;
 
                 case "getState":
@@ -992,7 +980,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                     break;
 
                 case "getBondedDevices":
-                    ensurePermissions(granted -> {
+                    ensureBluetoothPermissions(granted -> {
                         if (!granted) {
                             result.error("no_permissions", "discovering other devices requires location access permission", null);
                             return;
@@ -1020,7 +1008,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                     break;
 
                 case "startDiscovery":
-                    ensurePermissions(granted -> {
+                    ensureBluetoothPermissions(granted -> {
                         if (!granted) {
                             result.error("no_permissions", "discovering other devices requires location access permission", null);
                             return;
