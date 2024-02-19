@@ -12,6 +12,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.os.Handler;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -54,6 +55,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
     private static final int REQUEST_COARSE_LOCATION_PERMISSIONS = 1451;
     private static final int REQUEST_ENABLE_BLUETOOTH = 1337;
     private static final int REQUEST_DISCOVERABLE_BLUETOOTH = 2137;
+    private static final int REQUEST_BLUETOOTH_PERMISSIONS = 123;
 
     // General Bluetooth
     private BluetoothAdapter bluetoothAdapter;
@@ -380,49 +382,83 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
         if (methodChannel != null) methodChannel.setMethodCallHandler(null);
     }
 
-    @Override
+   @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
-//        if (true) throw new RuntimeException("FlutterBluetoothSerial Attached to activity");
         this.activity = binding.getActivity();
         BluetoothManager bluetoothManager = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
-        assert bluetoothManager != null;
 
-        this.bluetoothAdapter = bluetoothManager.getAdapter();
+        if (bluetoothManager != null) {
+            this.bluetoothAdapter = bluetoothManager.getAdapter();
 
-        binding.addActivityResultListener(
-                (requestCode, resultCode, data) -> {
-                    switch (requestCode) {
-                        case REQUEST_ENABLE_BLUETOOTH:
-                            // @TODO - used underlying value of `Activity.RESULT_CANCELED` since we tend to use `androidx` in which I were not able to find the constant.
-                            if (pendingResultForActivityResult != null) {
-                                pendingResultForActivityResult.success(resultCode != 0);
-                            }
-                            return true;
+            binding.addActivityResultListener((requestCode, resultCode, data) -> {
+                switch (requestCode) {
+                    case REQUEST_ENABLE_BLUETOOTH:
+                        if (pendingResultForActivityResult != null) {
+                            pendingResultForActivityResult.success(resultCode == Activity.RESULT_OK);
+                        }
+                        return true;
 
-                        case REQUEST_DISCOVERABLE_BLUETOOTH:
-                            pendingResultForActivityResult.success(resultCode == 0 ? -1 : resultCode);
-                            return true;
+                    case REQUEST_DISCOVERABLE_BLUETOOTH:
+                        pendingResultForActivityResult.success(resultCode == Activity.RESULT_OK ? -1 : resultCode);
+                        return true;
 
-                        default:
-                            return false;
-                    }
+                    default:
+                        return false;
                 }
-        );
-        binding.addRequestPermissionsResultListener(
-                (requestCode, permissions, grantResults) -> {
-                    switch (requestCode) {
-                        case REQUEST_COARSE_LOCATION_PERMISSIONS:
-                            pendingPermissionsEnsureCallbacks.onResult(grantResults[0] == PackageManager.PERMISSION_GRANTED);
-                            pendingPermissionsEnsureCallbacks = null;
-                            return true;
-                    }
-                    return false;
-                }
-        );
-        activity = binding.getActivity();
-        activeContext = binding.getActivity().getApplicationContext();
+            });
 
+            binding.addRequestPermissionsResultListener((requestCode, permissions, grantResults) -> {
+                switch (requestCode) {
+                    case REQUEST_COARSE_LOCATION_PERMISSIONS:
+                        handleLocationPermissionsResult(grantResults);
+                        return true;
+
+                    case REQUEST_BLUETOOTH_PERMISSIONS:
+                        handleBluetoothPermissionsResult(grantResults);
+                        return true;
+
+                    default:
+                        return false;
+                }
+            });
+
+            activity = binding.getActivity();
+            activeContext = binding.getActivity().getApplicationContext();
+        } else {
+            // Handle the case where BluetoothManager is null
+            Log.e("YourTag", "BluetoothManager is null");
+        }
     }
+
+    private void handleLocationPermissionsResult(int[] grantResults) {
+        if (pendingPermissionsEnsureCallbacks != null && grantResults.length > 0) {
+            boolean permissionGranted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+            // Adding a delay using Handler
+            new Handler().postDelayed(() -> {
+                if (pendingPermissionsEnsureCallbacks != null) {
+                    pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
+                    pendingPermissionsEnsureCallbacks = null;
+                }
+            }, 500);
+        }
+    }
+
+    private void handleBluetoothPermissionsResult(int[] grantResults) {
+        if (pendingPermissionsEnsureCallbacks != null && grantResults.length > 0) {
+            boolean permissionGranted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+            // Adding a delay using Handler
+            new Handler().postDelayed(() -> {
+                if (pendingPermissionsEnsureCallbacks != null) {
+                    pendingPermissionsEnsureCallbacks.onResult(permissionGranted);
+                    pendingPermissionsEnsureCallbacks = null;
+                }
+            }, 500);
+        }
+    }
+
+
 
     @Override
     public void onDetachedFromActivityForConfigChanges() {
@@ -447,33 +483,38 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
     EnsurePermissionsCallback pendingPermissionsEnsureCallbacks = null;
 
     private void ensurePermissions(EnsurePermissionsCallback callbacks) {
-    boolean permissionGranted = false;
-    String[] requestString;
+
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        permissionGranted = (
+        boolean bluetoothPermissionGranted = (
                 ContextCompat.checkSelfPermission(activity,
                         Manifest.permission.BLUETOOTH_SCAN)
                         == PackageManager.PERMISSION_GRANTED
                 && ContextCompat.checkSelfPermission(activity,
                         Manifest.permission.BLUETOOTH_CONNECT)
                         == PackageManager.PERMISSION_GRANTED);
-        requestString = new String[]{
+
+        String[] bluetoothRequestString = new String[]{
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT
         };
-    }
 
-    if (!permissionGranted) {
-        ActivityCompat.requestPermissions(activity,
-                requestString,
-                REQUEST_COARSE_LOCATION_PERMISSIONS);
+        if (!bluetoothPermissionGranted) {
+            ActivityCompat.requestPermissions(activity,
+                    bluetoothRequestString,
+                    REQUEST_BLUETOOTH_PERMISSIONS);
 
-        pendingPermissionsEnsureCallbacks = callbacks;
+            pendingPermissionsEnsureCallbacks = callbacks;
+        } else {
+            // Both Bluetooth and location permissions are granted
+            callbacks.onResult(true);
+        }
     } else {
-        callbacks.onResult(true);
+            // Location permissions are granted
+            callbacks.onResult(true);
     }
     }
+
 
 
 
