@@ -70,7 +70,7 @@ enum BluetoothDeviceClass {
   WEARABLE_WRIST_WATCH(1796),
 
   // Printer
-  EPSON_PRINTER(1664),
+  PRINTER(1664),
 
   // Major Class Devices
   IMAGING(1536),
