@@ -74,6 +74,7 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
     private EventSink discoverySink;
     private final BroadcastReceiver discoveryReceiver;
+    private boolean isDiscoveryReceiverRegistered = false;
 
     // Connections
     /// Contains all active connections. Maps ID of the connection with plugin data channels. 
@@ -297,17 +298,29 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
                     case BluetoothAdapter.ACTION_DISCOVERY_FINISHED:
                         Log.d(TAG, "Discovery finished");
-                        try {
-                            context.unregisterReceiver(discoveryReceiver);
-                        } catch (IllegalArgumentException ex) {
-                            // Ignore `Receiver not registered` exception
+                        
+                        // Stop discovery
+                        if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+                            bluetoothAdapter.cancelDiscovery();
+                        }
+                        
+                        // Unregister receiver only if it's still registered
+                        if (isDiscoveryReceiverRegistered) {
+                            try {
+                                context.unregisterReceiver(discoveryReceiver);
+                                isDiscoveryReceiverRegistered = false;
+                                Log.d(TAG, "Discovery receiver unregistered successfully");
+                            } catch (IllegalArgumentException ex) {
+                                // Ignore `Receiver not registered` exception - might be already unregistered by onCancel
+                                Log.d(TAG, "Discovery receiver was already unregistered");
+                            }
                         }
 
-                        bluetoothAdapter.cancelDiscovery();
-
+                        // Clean up sink
                         if (discoverySink != null) {
                             discoverySink.endOfStream();
                             discoverySink = null;
+                            Log.d(TAG, "Discovery sink cleaned up");
                         }
                         break;
 
@@ -358,23 +371,37 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
             @Override
             public void onListen(Object o, EventSink eventSink) {
                 discoverySink = eventSink;
+                Log.d(TAG, "Discovery stream listener attached");
             }
 
             @Override
             public void onCancel(Object o) {
                 Log.d(TAG, "Canceling discovery (stream closed)");
-                try {
-                    activeContext.unregisterReceiver(discoveryReceiver);
-                } catch (IllegalArgumentException ex) {
-                    // Ignore `Receiver not registered` exception
+                
+                // Stop discovery first
+                if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+                    bluetoothAdapter.cancelDiscovery();
+                }
+                
+                // Clean up receiver
+                if (isDiscoveryReceiverRegistered) {
+                    try {
+                        activeContext.unregisterReceiver(discoveryReceiver);
+                        isDiscoveryReceiverRegistered = false;
+                        Log.d(TAG, "Discovery receiver unregistered in onCancel");
+                    } catch (IllegalArgumentException ex) {
+                        // Ignore `Receiver not registered` exception
+                        Log.d(TAG, "Discovery receiver was not registered in onCancel");
+                    }
                 }
 
-                bluetoothAdapter.cancelDiscovery();
-
+                // Clean up sink
                 if (discoverySink != null) {
                     discoverySink.endOfStream();
                     discoverySink = null;
                 }
+                
+                Log.d(TAG, "Discovery stream canceled and cleaned up");
             }
         };
         discoveryChannel.setStreamHandler(discoveryStreamHandler);
@@ -963,12 +990,36 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                         }
 
                         Log.d(TAG, "Starting discovery");
+                        
+                        // Ensure any previous discovery is stopped and cleaned up
+                        if (bluetoothAdapter.isDiscovering()) {
+                            Log.d(TAG, "Stopping previous discovery before starting new one");
+                            bluetoothAdapter.cancelDiscovery();
+                        }
+                        
+                        // Clean up any previous receiver registration
+                        if (isDiscoveryReceiverRegistered) {
+                            try {
+                                activeContext.unregisterReceiver(discoveryReceiver);
+                                isDiscoveryReceiverRegistered = false;
+                                Log.d(TAG, "Unregistered previous discovery receiver");
+                            } catch (IllegalArgumentException ex) {
+                                // Ignore `Receiver not registered` exception
+                                Log.d(TAG, "Previous discovery receiver was not registered");
+                            }
+                        }
+                        
+                        // Register receiver for new discovery
                         IntentFilter intent = new IntentFilter();
                         intent.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
                         intent.addAction(BluetoothDevice.ACTION_FOUND);
                         activeContext.registerReceiver(discoveryReceiver, intent);
+                        isDiscoveryReceiverRegistered = true;
+                        Log.d(TAG, "Discovery receiver registered");
 
-                        bluetoothAdapter.startDiscovery();
+                        // Start the actual discovery
+                        boolean started = bluetoothAdapter.startDiscovery();
+                        Log.d(TAG, "Discovery start result: " + started);
 
                         result.success(null);
                     });
@@ -976,17 +1027,30 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
 
                 case "cancelDiscovery":
                     Log.d(TAG, "Canceling discovery");
-                    try {
-                        activeContext.unregisterReceiver(discoveryReceiver);
-                    } catch (IllegalArgumentException ex) {
-                        // Ignore `Receiver not registered` exception
+                    
+                    // Stop discovery if running
+                    if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+                        bluetoothAdapter.cancelDiscovery();
+                        Log.d(TAG, "Discovery stopped");
+                    }
+                    
+                    // Unregister receiver
+                    if (isDiscoveryReceiverRegistered) {
+                        try {
+                            activeContext.unregisterReceiver(discoveryReceiver);
+                            isDiscoveryReceiverRegistered = false;
+                            Log.d(TAG, "Discovery receiver unregistered");
+                        } catch (IllegalArgumentException ex) {
+                            // Ignore `Receiver not registered` exception
+                            Log.d(TAG, "Discovery receiver was not registered");
+                        }
                     }
 
-                    bluetoothAdapter.cancelDiscovery();
-
+                    // Clean up sink
                     if (discoverySink != null) {
                         discoverySink.endOfStream();
                         discoverySink = null;
+                        Log.d(TAG, "Discovery sink cleaned up");
                     }
 
                     result.success(null);
