@@ -75,6 +75,12 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
     private EventSink discoverySink;
     private final BroadcastReceiver discoveryReceiver;
     private boolean isDiscoveryReceiverRegistered = false;
+    private final Object discoveryLock = new Object();
+    private long lastDiscoveryStartTime = 0;
+    
+    // Queue to store discovery events when sink is not ready
+    private final List<Map<String, Object>> discoveryEventQueue = new ArrayList<>();
+    private boolean isPendingDiscoveryStart = false;
 
     // Connections
     /// Contains all active connections. Maps ID of the connection with plugin data channels. 
@@ -276,51 +282,69 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                 switch (action) {
                     case BluetoothDevice.ACTION_FOUND:
                         final BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                        //final BluetoothClass deviceClass = intent.getParcelableExtra(BluetoothDevice.EXTRA_CLASS); // @TODO . !BluetoothClass!
-                        //final String extraName = intent.getStringExtra(BluetoothDevice.EXTRA_NAME); // @TODO ? !EXTRA_NAME!
                         final int deviceRSSI = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE);
 
-                        Map<String, Object> discoveryResult = new HashMap<>();
-                        discoveryResult.put("address", device.getAddress());
-                        discoveryResult.put("name", device.getName());
-                        discoveryResult.put("type", device.getType());
-                        //discoveryResult.put("class", deviceClass); // @TODO . it isn't my priority for now !BluetoothClass!
-                        discoveryResult.put("isConnected", checkIsDeviceConnected(device));
-                        discoveryResult.put("bondState", device.getBondState());
-                        discoveryResult.put("rssi", deviceRSSI);
-                        discoveryResult.put("deviceClass", device.getBluetoothClass().getDeviceClass());
-
-                        Log.d(TAG, "Discovered " + device.getAddress() + " (deviceClass: " + device.getBluetoothClass().getDeviceClass() + ")");
-                        if (discoverySink != null) {
-                            discoverySink.success(discoveryResult);
+                        synchronized (discoveryLock) {
+                            Log.d(TAG, "Device found: " + device.getAddress() + " (deviceClass: " + device.getBluetoothClass().getDeviceClass() + "), sink active: " + (discoverySink != null));
+                            
+                            // Create discovery result
+                            Map<String, Object> discoveryResult = new HashMap<>();
+                            discoveryResult.put("address", device.getAddress());
+                            discoveryResult.put("name", device.getName());
+                            discoveryResult.put("type", device.getType());
+                            discoveryResult.put("isConnected", checkIsDeviceConnected(device));
+                            discoveryResult.put("bondState", device.getBondState());
+                            discoveryResult.put("rssi", deviceRSSI);
+                            discoveryResult.put("deviceClass", device.getBluetoothClass().getDeviceClass());
+                            
+                            // Send immediately if sink is ready, otherwise queue it
+                            if (discoverySink != null) {
+                                discoverySink.success(discoveryResult);
+                                Log.d(TAG, "Discovered device sent to Flutter: " + device.getAddress());
+                            } else {
+                                discoveryEventQueue.add(discoveryResult);
+                                Log.d(TAG, "Discovered device queued (sink not ready): " + device.getAddress() + 
+                                      " (queue size: " + discoveryEventQueue.size() + ")");
+                            }
                         }
                         break;
 
                     case BluetoothAdapter.ACTION_DISCOVERY_FINISHED:
-                        Log.d(TAG, "Discovery finished");
-                        
-                        // Stop discovery
-                        if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
-                            bluetoothAdapter.cancelDiscovery();
-                        }
-                        
-                        // Unregister receiver only if it's still registered
-                        if (isDiscoveryReceiverRegistered) {
-                            try {
-                                context.unregisterReceiver(discoveryReceiver);
-                                isDiscoveryReceiverRegistered = false;
-                                Log.d(TAG, "Discovery receiver unregistered successfully");
-                            } catch (IllegalArgumentException ex) {
-                                // Ignore `Receiver not registered` exception - might be already unregistered by onCancel
-                                Log.d(TAG, "Discovery receiver was already unregistered");
+                        synchronized (discoveryLock) {
+                            long currentTime = System.currentTimeMillis();
+                            long discoveryDuration = currentTime - lastDiscoveryStartTime;
+                            Log.d(TAG, "Discovery finished - receiverRegistered: " + isDiscoveryReceiverRegistered + 
+                                  ", sinkActive: " + (discoverySink != null) + 
+                                  ", duration: " + discoveryDuration + "ms");
+                            
+                            // Stop discovery
+                            if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+                                bluetoothAdapter.cancelDiscovery();
+                                Log.d(TAG, "Discovery cancelled on finish");
                             }
-                        }
+                            
+                            // Unregister receiver only if it's still registered
+                            if (isDiscoveryReceiverRegistered) {
+                                try {
+                                    context.unregisterReceiver(discoveryReceiver);
+                                    isDiscoveryReceiverRegistered = false;
+                                    Log.d(TAG, "Discovery receiver unregistered successfully on finish");
+                                } catch (IllegalArgumentException ex) {
+                                    // Ignore `Receiver not registered` exception - might be already unregistered by onCancel
+                                    Log.d(TAG, "Discovery receiver was already unregistered on finish: " + ex.getMessage());
+                                }
+                            } else {
+                                Log.d(TAG, "Discovery receiver was not registered when finish event received");
+                            }
 
-                        // Clean up sink
-                        if (discoverySink != null) {
-                            discoverySink.endOfStream();
-                            discoverySink = null;
-                            Log.d(TAG, "Discovery sink cleaned up");
+                            // Clean up sink
+                            if (discoverySink != null) {
+                                discoverySink.endOfStream();
+                                discoverySink = null;
+                                Log.d(TAG, "Discovery sink cleaned up on finish");
+                            } else {
+                                Log.d(TAG, "Discovery sink was already null on finish");
+                            }
                         }
                         break;
 
@@ -370,38 +394,55 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
         StreamHandler discoveryStreamHandler = new StreamHandler() {
             @Override
             public void onListen(Object o, EventSink eventSink) {
-                discoverySink = eventSink;
-                Log.d(TAG, "Discovery stream listener attached");
+                synchronized (discoveryLock) {
+                    Log.d(TAG, "Discovery stream listener attached");
+                    logDiscoveryStatus("onListen-start");
+                    
+                    // Check if discovery is running without proper receiver
+                    if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering() && !isDiscoveryReceiverRegistered) {
+                        Log.w(TAG, "ORPHANED DISCOVERY DETECTED - discovery running without receiver, forcing cleanup");
+                        forceCleanupDiscovery("onListen-orphaned");
+                        
+                        // Extra wait for complete cleanup
+                        try {
+                            Thread.sleep(300);
+                            Log.d(TAG, "Waited 300ms after orphaned discovery cleanup");
+                        } catch (InterruptedException e) {
+                            Log.d(TAG, "Sleep interrupted after orphaned cleanup");
+                        }
+                        
+                        logDiscoveryStatus("onListen-orphaned-cleaned");
+                    }
+                    
+                    // Set the sink
+                    discoverySink = eventSink;
+                    
+                    // Flush any queued discovery events
+                    flushDiscoveryEventQueue();
+                    
+                    logDiscoveryStatus("onListen-end");
+                }
             }
 
             @Override
             public void onCancel(Object o) {
-                Log.d(TAG, "Canceling discovery (stream closed)");
-                
-                // Stop discovery first
-                if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
-                    bluetoothAdapter.cancelDiscovery();
-                }
-                
-                // Clean up receiver
-                if (isDiscoveryReceiverRegistered) {
+                synchronized (discoveryLock) {
+                    Log.d(TAG, "Canceling discovery (stream closed)");
+                    logDiscoveryStatus("onCancel-start");
+                    
+                    // Use force cleanup to ensure complete state reset
+                    forceCleanupDiscovery("onCancel");
+                    
+                    // Additional wait to ensure cleanup
                     try {
-                        activeContext.unregisterReceiver(discoveryReceiver);
-                        isDiscoveryReceiverRegistered = false;
-                        Log.d(TAG, "Discovery receiver unregistered in onCancel");
-                    } catch (IllegalArgumentException ex) {
-                        // Ignore `Receiver not registered` exception
-                        Log.d(TAG, "Discovery receiver was not registered in onCancel");
+                        Thread.sleep(300);
+                    } catch (InterruptedException e) {
+                        Log.d(TAG, "Sleep interrupted during onCancel");
                     }
+                    
+                    logDiscoveryStatus("onCancel-end");
+                    Log.d(TAG, "Discovery stream canceled and cleaned up completely");
                 }
-
-                // Clean up sink
-                if (discoverySink != null) {
-                    discoverySink.endOfStream();
-                    discoverySink = null;
-                }
-                
-                Log.d(TAG, "Discovery stream canceled and cleaned up");
             }
         };
         discoveryChannel.setStreamHandler(discoveryStreamHandler);
@@ -534,6 +575,122 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
             return (boolean) (Boolean) method.invoke(device);
         } catch (Exception ex) {
             return false;
+        }
+    }
+
+    /// Helper method to flush queued discovery events when sink becomes available
+    private void flushDiscoveryEventQueue() {
+        synchronized (discoveryLock) {
+            if (discoverySink != null && !discoveryEventQueue.isEmpty()) {
+                Log.d(TAG, "Flushing " + discoveryEventQueue.size() + " queued discovery events");
+                
+                for (Map<String, Object> event : discoveryEventQueue) {
+                    discoverySink.success(event);
+                    Log.d(TAG, "Flushed queued device: " + event.get("address"));
+                }
+                
+                discoveryEventQueue.clear();
+                Log.d(TAG, "Discovery event queue flushed and cleared");
+            }
+        }
+    }
+
+    /// Helper method to log detailed discovery status for debugging
+    private void logDiscoveryStatus(String context) {
+        Log.d(TAG, "=== Discovery Status (" + context + ") ===");
+        Log.d(TAG, "  bluetoothAdapter.isDiscovering(): " + 
+              (bluetoothAdapter != null ? bluetoothAdapter.isDiscovering() : "null"));
+        Log.d(TAG, "  isDiscoveryReceiverRegistered: " + isDiscoveryReceiverRegistered);
+        Log.d(TAG, "  discoverySink != null: " + (discoverySink != null));
+        Log.d(TAG, "  lastDiscoveryStartTime: " + lastDiscoveryStartTime);
+        Log.d(TAG, "  currentTime: " + System.currentTimeMillis());
+        Log.d(TAG, "  isPendingDiscoveryStart: " + isPendingDiscoveryStart);
+        Log.d(TAG, "  discoveryEventQueue.size(): " + discoveryEventQueue.size());
+        if (lastDiscoveryStartTime > 0) {
+            long elapsed = System.currentTimeMillis() - lastDiscoveryStartTime;
+            Log.d(TAG, "  timeSinceLastStart: " + elapsed + "ms");
+        }
+        Log.d(TAG, "=== End Discovery Status ===");
+    }
+
+    /// Helper method to force cleanup discovery state
+    private void forceCleanupDiscovery(String caller) {
+        synchronized (discoveryLock) {
+            Log.d(TAG, "Force cleanup discovery called by: " + caller);
+            
+            // Force stop discovery multiple times to ensure it stops
+            if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+                Log.d(TAG, "Discovery is active, forcing multiple stops");
+                
+                for (int i = 0; i < 3; i++) {
+                    boolean stopped = bluetoothAdapter.cancelDiscovery();
+                    Log.d(TAG, "Forced discovery stop attempt " + (i+1) + " result: " + stopped);
+                    
+                    // Wait a moment between attempts
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Log.d(TAG, "Sleep interrupted during discovery stop attempt " + (i+1));
+                    }
+                    
+                    // Check if discovery actually stopped
+                    if (!bluetoothAdapter.isDiscovering()) {
+                        Log.d(TAG, "Discovery successfully stopped after " + (i+1) + " attempts");
+                        break;
+                    }
+                }
+                
+                // Final check - if still discovering, wait longer
+                if (bluetoothAdapter.isDiscovering()) {
+                    Log.w(TAG, "Discovery still active after 3 attempts, waiting 200ms more");
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException e) {
+                        Log.d(TAG, "Sleep interrupted during final discovery wait");
+                    }
+                    
+                    // One final cancel attempt
+                    boolean finalStop = bluetoothAdapter.cancelDiscovery();
+                    Log.d(TAG, "Final discovery stop attempt result: " + finalStop + 
+                          ", isDiscovering now: " + bluetoothAdapter.isDiscovering());
+                }
+            }
+            
+            // Force unregister receiver
+            if (isDiscoveryReceiverRegistered) {
+                try {
+                    activeContext.unregisterReceiver(discoveryReceiver);
+                    isDiscoveryReceiverRegistered = false;
+                    Log.d(TAG, "Forced receiver unregister successful");
+                } catch (IllegalArgumentException ex) {
+                    Log.d(TAG, "Receiver was not registered during force cleanup: " + ex.getMessage());
+                    isDiscoveryReceiverRegistered = false; // Reset flag anyway
+                }
+            }
+            
+            // Force cleanup sink
+            if (discoverySink != null) {
+                try {
+                    discoverySink.endOfStream();
+                } catch (Exception ex) {
+                    Log.d(TAG, "Error ending stream during force cleanup: " + ex.getMessage());
+                }
+                discoverySink = null;
+                Log.d(TAG, "Forced sink cleanup completed");
+            }
+            
+            // Clear discovery event queue
+            if (!discoveryEventQueue.isEmpty()) {
+                int queueSize = discoveryEventQueue.size();
+                discoveryEventQueue.clear();
+                Log.d(TAG, "Cleared " + queueSize + " queued discovery events");
+            }
+            
+            // Reset pending flags
+            isPendingDiscoveryStart = false;
+            
+            Log.d(TAG, "Force cleanup discovery completed by: " + caller + 
+                  ", final discovery state: " + (bluetoothAdapter != null ? bluetoothAdapter.isDiscovering() : "null"));
         }
     }
 
@@ -989,69 +1146,98 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                             return;
                         }
 
-                        Log.d(TAG, "Starting discovery");
-                        
-                        // Ensure any previous discovery is stopped and cleaned up
-                        if (bluetoothAdapter.isDiscovering()) {
-                            Log.d(TAG, "Stopping previous discovery before starting new one");
-                            bluetoothAdapter.cancelDiscovery();
-                        }
-                        
-                        // Clean up any previous receiver registration
-                        if (isDiscoveryReceiverRegistered) {
-                            try {
-                                activeContext.unregisterReceiver(discoveryReceiver);
-                                isDiscoveryReceiverRegistered = false;
-                                Log.d(TAG, "Unregistered previous discovery receiver");
-                            } catch (IllegalArgumentException ex) {
-                                // Ignore `Receiver not registered` exception
-                                Log.d(TAG, "Previous discovery receiver was not registered");
+                        synchronized (discoveryLock) {
+                            long currentTime = System.currentTimeMillis();
+                            Log.d(TAG, "Starting discovery at time: " + currentTime);
+                            logDiscoveryStatus("startDiscovery-begin");
+                            
+                            // Critical: Force stop any ongoing discovery first
+                            if (bluetoothAdapter.isDiscovering()) {
+                                Log.w(TAG, "Discovery already running, forcing stop");
+                                for (int i = 0; i < 3; i++) {
+                                    boolean stopped = bluetoothAdapter.cancelDiscovery();
+                                    Log.d(TAG, "Discovery stop attempt " + (i+1) + " result: " + stopped);
+                                    
+                                    try {
+                                        Thread.sleep(50);
+                                    } catch (InterruptedException e) {
+                                        Log.d(TAG, "Sleep interrupted during discovery stop");
+                                    }
+                                    
+                                    if (!bluetoothAdapter.isDiscovering()) {
+                                        Log.d(TAG, "Discovery stopped successfully after " + (i+1) + " attempts");
+                                        break;
+                                    }
+                                }
                             }
+                            
+                            // Force cleanup any previous discovery state
+                            forceCleanupDiscovery("startDiscovery");
+                            
+                            // Wait for system to settle after cleanup
+                            try {
+                                Thread.sleep(300);
+                                Log.d(TAG, "Waited 300ms after force cleanup");
+                            } catch (InterruptedException e) {
+                                Log.d(TAG, "Sleep interrupted after force cleanup");
+                            }
+                            
+                            logDiscoveryStatus("startDiscovery-after-cleanup");
+                            
+                            // Final check - ensure discovery is really stopped
+                            if (bluetoothAdapter.isDiscovering()) {
+                                Log.e(TAG, "Discovery still running after cleanup! This is a problem.");
+                                result.error("discovery_error", "Cannot start new discovery - previous discovery still running", null);
+                                return;
+                            }
+                            
+                            // Register receiver for new discovery
+                            try {
+                                IntentFilter intent = new IntentFilter();
+                                intent.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+                                intent.addAction(BluetoothDevice.ACTION_FOUND);
+                                activeContext.registerReceiver(discoveryReceiver, intent);
+                                isDiscoveryReceiverRegistered = true;
+                                Log.d(TAG, "Discovery receiver registered successfully");
+                            } catch (Exception ex) {
+                                Log.e(TAG, "Failed to register discovery receiver: " + ex.getMessage());
+                                result.error("discovery_error", "Failed to register discovery receiver", ex.getMessage());
+                                return;
+                            }
+
+                            // CRITICAL: Ensure sink is set before starting discovery
+                            if (discoverySink == null) {
+                                Log.w(TAG, "Discovery sink is null, this may cause discovery to be immediately canceled");
+                                // We'll proceed anyway as onListen will set the sink
+                            }
+
+                            // Start the actual discovery
+                            boolean started = bluetoothAdapter.startDiscovery();
+                            lastDiscoveryStartTime = currentTime;
+                            
+                            logDiscoveryStatus("startDiscovery-after-start");
+                            Log.d(TAG, "Discovery start result: " + started + " at time: " + lastDiscoveryStartTime);
+                            
+                            if (!started) {
+                                // If discovery failed to start, clean up
+                                Log.e(TAG, "Discovery failed to start!");
+                                forceCleanupDiscovery("startDiscovery-failed");
+                                result.error("discovery_error", "Failed to start discovery", null);
+                                return;
+                            }
+
+                            result.success(null);
                         }
-                        
-                        // Register receiver for new discovery
-                        IntentFilter intent = new IntentFilter();
-                        intent.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
-                        intent.addAction(BluetoothDevice.ACTION_FOUND);
-                        activeContext.registerReceiver(discoveryReceiver, intent);
-                        isDiscoveryReceiverRegistered = true;
-                        Log.d(TAG, "Discovery receiver registered");
-
-                        // Start the actual discovery
-                        boolean started = bluetoothAdapter.startDiscovery();
-                        Log.d(TAG, "Discovery start result: " + started);
-
-                        result.success(null);
                     });
                     break;
 
                 case "cancelDiscovery":
-                    Log.d(TAG, "Canceling discovery");
+                    Log.d(TAG, "Canceling discovery manually - isDiscovering: " + bluetoothAdapter.isDiscovering() + 
+                          ", receiverRegistered: " + isDiscoveryReceiverRegistered + 
+                          ", sinkActive: " + (discoverySink != null));
                     
-                    // Stop discovery if running
-                    if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
-                        bluetoothAdapter.cancelDiscovery();
-                        Log.d(TAG, "Discovery stopped");
-                    }
-                    
-                    // Unregister receiver
-                    if (isDiscoveryReceiverRegistered) {
-                        try {
-                            activeContext.unregisterReceiver(discoveryReceiver);
-                            isDiscoveryReceiverRegistered = false;
-                            Log.d(TAG, "Discovery receiver unregistered");
-                        } catch (IllegalArgumentException ex) {
-                            // Ignore `Receiver not registered` exception
-                            Log.d(TAG, "Discovery receiver was not registered");
-                        }
-                    }
-
-                    // Clean up sink
-                    if (discoverySink != null) {
-                        discoverySink.endOfStream();
-                        discoverySink = null;
-                        Log.d(TAG, "Discovery sink cleaned up");
-                    }
+                    // Use force cleanup for manual cancel
+                    forceCleanupDiscovery("cancelDiscovery");
 
                     result.success(null);
                     break;
